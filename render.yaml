@@ -24,11 +24,9 @@ services:
       - key: COOKIE_SECURE
         value: "true"
 
-  # 2. Frontend React / Vite Static Site (Global CDN - no region)
-  - type: web
+  # 2. Frontend React / Vite Static Site
+  - type: static_site
     name: payrescue-frontend
-    runtime: static
-    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist

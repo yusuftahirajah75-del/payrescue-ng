@@ -3,10 +3,13 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Install openssl for Prisma engines on alpine
+RUN apk add --no-cache openssl
+
 COPY package*.json ./
 COPY prisma ./prisma/
 
-RUN npm ci
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY tsconfig.json ./
 COPY src ./src
@@ -22,10 +25,12 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=5000
 
+RUN apk add --no-cache openssl
+
 COPY package*.json ./
 COPY prisma ./prisma/
 
-RUN npm ci --only=production
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 RUN npx prisma generate
 
 COPY --from=builder /app/dist ./dist

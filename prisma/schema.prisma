@@ -1,0 +1,953 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  USER
+  BUSINESS_OWNER
+  BUSINESS_ADMIN
+  BUSINESS_AGENT
+  SUPPORT_AGENT
+  FRAUD_ANALYST
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum AccountStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum ProviderCategory {
+  TELECOM
+  ELECTRICITY
+  CABLE_TV
+  BANK
+  PSP
+  PAYMENT_GATEWAY
+  MERCHANT
+  OTHER_DIGITAL
+}
+
+enum TransactionType {
+  AIRTIME
+  DATA
+  ELECTRICITY_TOKEN
+  CABLE_SUBSCRIPTION
+  BANK_TRANSFER
+  GATEWAY_PAYMENT
+  MERCHANT_CHECKOUT
+  SUBSCRIPTION_BILL
+  OTHER
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REVERSED
+  PARTIALLY_REFUNDED
+  DISPUTED
+  UNKNOWN
+}
+
+enum CaseStatus {
+  OPEN
+  EVIDENCE_REQUIRED
+  EVIDENCE_REVIEW
+  READY_FOR_COMPLAINT
+  COMPLAINT_PREPARED
+  SUBMITTED
+  PROVIDER_REVIEW
+  PENDING
+  RESOLVED
+  PARTIALLY_RESOLVED
+  REJECTED
+  ESCALATED
+  CLOSED
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum DisputeCategory {
+  FAILED_SERVICE
+  PENDING
+  DUPLICATE
+  WRONG_AMOUNT
+  PAYMENT_NOT_RECEIVED
+  SERVICE_NOT_RECEIVED
+  POSSIBLE_MISMATCH
+  NEEDS_VERIFICATION
+  DEBITED_NOT_CREDITED
+  OTHER
+}
+
+enum EvidenceStatus {
+  PENDING_SCAN
+  CLEAN
+  SUSPICIOUS
+  INFECTED
+  REJECTED
+}
+
+enum ReconciliationStatus {
+  MATCHED
+  PARTIAL_MATCH
+  UNMATCHED
+  DUPLICATE
+  MISMATCH
+  NEEDS_REVIEW
+}
+
+enum RiskAction {
+  ALLOW
+  VERIFY
+  REVIEW
+  BLOCK
+}
+
+enum SubscriptionTier {
+  FREE
+  STARTER
+  BUSINESS
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  UNPAID
+  INCOMPLETE
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+// --------------------------------------------------------
+// 1. IDENTITY & RBAC
+// --------------------------------------------------------
+
+model User {
+  id                  String         @id @default(uuid())
+  email               String         @unique
+  passwordHash        String
+  firstName           String
+  lastName            String
+  phone               String?        @unique
+  role                Role           @default(USER)
+  status              AccountStatus  @default(ACTIVE)
+  emailVerified       Boolean        @default(false)
+  phoneVerified       Boolean        @default(false)
+  emailVerifyToken    String?
+  passwordResetToken  String?
+  passwordResetExpiry DateTime?
+  twoFactorEnabled    Boolean        @default(false)
+  twoFactorSecret     String?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  sessions            Session[]
+  deviceLogs          DeviceLog[]
+  businessMembers     BusinessMember[]
+  rescueCases         RescueCase[]
+  evidenceUploaded    Evidence[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  transactions        Transaction[]
+
+  @@index([email])
+  @@index([role])
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  userId       String
+  refreshToken String    @unique
+  userAgent    String?
+  ipAddress    String?
+  isValid      Boolean   @default(true)
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+}
+
+model DeviceLog {
+  id         String   @id @default(uuid())
+  userId     String
+  ipAddress  String
+  userAgent  String
+  deviceType String?
+  location   String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// --------------------------------------------------------
+// 2. BUSINESS & MULTI-TENANCY
+// --------------------------------------------------------
+
+model Business {
+  id                   String            @id @default(uuid())
+  name                 String
+  slug                 String            @unique
+  registrationNumber   String?           // CAC RC Number in Nigeria
+  taxIdentificationNo  String?           // TIN
+  contactEmail         String
+  contactPhone         String?
+  websiteUrl           String?
+  kybStatus            String            @default("PENDING") // PENDING, APPROVED, REJECTED
+  currency             String            @default("NGN")
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  members              BusinessMember[]
+  customers            Customer[]
+  transactions         Transaction[]
+  rescueCases          RescueCase[]
+  reconciliationJobs   ReconciliationJob[]
+  paymentRequests      PaymentRequest[]
+  apiKeys              ApiKey[]
+  webhooks             Webhook[]
+  subscriptions        Subscription[]
+  invoices             Invoice[]
+  usageRecords         UsageRecord[]
+
+  @@index([slug])
+}
+
+model BusinessMember {
+  id         String   @id @default(uuid())
+  businessId String
+  userId     String
+  role       Role     @default(BUSINESS_AGENT)
+  title      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId])
+  @@index([businessId])
+  @@index([userId])
+}
+
+model Customer {
+  id           String        @id @default(uuid())
+  businessId   String
+  email        String
+  phone        String?
+  fullName     String
+  metadata     Json?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([businessId, email])
+  @@index([businessId])
+}
+
+// --------------------------------------------------------
+// 3. PROVIDER DIRECTORY
+// --------------------------------------------------------
+
+model Provider {
+  id                 String            @id @default(uuid())
+  code               String            @unique // e.g. MTN_NG, GTBANK, EKEDC
+  name               String
+  category           ProviderCategory
+  logoUrl            String?
+  website            String?
+  supportEmail       String?
+  supportPhone       String?
+  complaintPortalUrl String?
+  escalationChannels Json?             // E.g. {"regulator": "CBN/NCC", "email": "..."}
+  slaHours           Int               @default(72) // Max hours under guidelines
+  requiredEvidence   String[]          // e.g. ["DEBIT_ALERT", "SESSION_ID", "METER_NO"]
+  complaintTemplate  String?
+  hasApiIntegration  Boolean           @default(false)
+  hasWebhook         Boolean           @default(false)
+  isActive           Boolean           @default(true)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  services           ProviderService[]
+  transactions       Transaction[]
+  rescueCases        RescueCase[]
+
+  @@index([category])
+  @@index([isActive])
+}
+
+model ProviderService {
+  id          String   @id @default(uuid())
+  providerId  String
+  serviceCode String   // e.g. DATA_1GB, PREPAID_METER
+  serviceName String
+  description String?
+  isActive    Boolean  @default(true)
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, serviceCode])
+  @@index([providerId])
+}
+
+// --------------------------------------------------------
+// 4. TRANSACTION RECOVERY LEDGER (IMMUTABLE)
+// --------------------------------------------------------
+
+model Transaction {
+  id                   String            @id @default(uuid())
+  internalReference    String            @unique // Internal unique ref: PRTX-...
+  publicReference      String            // Customer-facing / Gateway ref (e.g. RRN, Session ID)
+  amount               Decimal           @db.Decimal(14, 2)
+  currency             String            @default("NGN")
+  transactionType      TransactionType
+  providerId           String?
+  merchantName         String?
+  senderIdentifier     String?           // e.g. Sender Account / Phone
+  recipientIdentifier  String?           // e.g. Meter No, Phone, Beneficiary Account
+  channel              String?           // USSD, MOBILE_APP, POS, WEB_CHECKOUT, ATM
+  status               TransactionStatus @default(PENDING)
+  claimedStatus        TransactionStatus?
+  verifiedStatus       TransactionStatus?
+  transactionTimestamp DateTime
+  rawMetadata          Json?
+  source               String            @default("USER_ENTRY") // USER_ENTRY, CSV_IMPORT, API, WEBHOOK
+  businessId           String?
+  customerId           String?
+  userId               String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  provider             Provider?         @relation(fields: [providerId], references: [id])
+  business             Business?         @relation(fields: [businessId], references: [id])
+  customer             Customer?         @relation(fields: [customerId], references: [id])
+  user                 User?             @relation(fields: [userId], references: [id])
+  events               TransactionEvent[]
+  rescueCases          RescueCase[]
+  verificationResults  VerificationResult[]
+
+  @@index([publicReference])
+  @@index([providerId])
+  @@index([businessId])
+  @@index([userId])
+  @@index([transactionTimestamp])
+}
+
+model TransactionEvent {
+  id            String            @id @default(uuid())
+  transactionId String
+  actorType     String            // USER, SYSTEM, PROVIDER, ADMIN
+  actorId       String?
+  previousStatus TransactionStatus?
+  newStatus     TransactionStatus
+  reason        String?
+  payload       Json?
+  createdAt     DateTime          @default(now())
+
+  transaction   Transaction       @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+}
+
+// --------------------------------------------------------
+// 5. RESCUE CASE MANAGEMENT ("One Transaction -> One Rescue Case")
+// --------------------------------------------------------
+
+model RescueCase {
+  id                 String           @id @default(uuid())
+  caseNumber         String           @unique // e.g. RC-202609-00123
+  title              String
+  description        String
+  userId             String
+  businessId         String?
+  transactionId      String
+  providerId         String?
+  category           DisputeCategory
+  status             CaseStatus       @default(OPEN)
+  priority           CasePriority     @default(MEDIUM)
+  claimAmount        Decimal          @db.Decimal(14, 2)
+  currency           String           @default("NGN")
+  expectedResolution String?          // REFUND, SERVICE_VALUE, REVERSAL, STATUS_CONFIRMATION
+  slaDeadline        DateTime?
+  escalationLevel    Int              @default(0) // 0: Provider, 1: Regulator (CBN/FCCPC/NCC), 2: Legal
+  resolutionNotes    String?
+  resolvedAt         DateTime?
+  closedAt           DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  user               User             @relation(fields: [userId], references: [id])
+  business           Business?        @relation(fields: [businessId], references: [id])
+  transaction        Transaction      @relation(fields: [transactionId], references: [id])
+  provider           Provider?        @relation(fields: [providerId], references: [id])
+  evidence           Evidence[]
+  caseEvents         CaseEvent[]
+  timelineRecords    CaseTimelineRecord[]
+  complaints         Complaint[]
+  riskSignals        RiskSignal[]
+
+  @@index([userId])
+  @@index([businessId])
+  @@index([transactionId])
+  @@index([status])
+  @@index([caseNumber])
+}
+
+model CaseEvent {
+  id         String     @id @default(uuid())
+  caseId     String
+  actorId    String?
+  actorRole  Role?
+  fromStatus CaseStatus?
+  toStatus   CaseStatus
+  summary    String
+  metadata   Json?
+  createdAt  DateTime   @default(now())
+
+  rescueCase RescueCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+}
+
+model CaseTimelineRecord {
+  id          String   @id @default(uuid())
+  caseId      String
+  eventType   String   // CREATED, EVIDENCE_UPLOADED, COMPLAINT_SENT, ESCALATED, RESOLVED
+  title       String
+  description String
+  actorName   String
+  isInternal  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  rescueCase  RescueCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+}
+
+// --------------------------------------------------------
+// 6. EVIDENCE & OCR EXTRACTION VAULT
+// --------------------------------------------------------
+
+model Evidence {
+  id               String          @id @default(uuid())
+  caseId           String
+  uploadedById     String
+  originalFilename String
+  storageKey       String
+  storageDriver    String          // local, s3, cloudinary
+  publicUrl        String?
+  fileSizeBytes    Int
+  mimeType         String
+  sha256Hash       String          // Tamper-proof cryptographic hash
+  status           EvidenceStatus  @default(CLEAN)
+  documentType     String          // SCREENSHOT, RECEIPT, BANK_STATEMENT, SMS_ALERT
+  scanResult       String?
+  isVerifiedProof  Boolean         @default(false) // Proof of payment cannot rely on screenshot alone
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  rescueCase       RescueCase      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  uploadedBy       User            @relation(fields: [uploadedById], references: [id])
+  auditLogs        EvidenceAuditLog[]
+  ocrExtractions   OcrExtraction[]
+
+  @@index([caseId])
+  @@index([sha256Hash])
+}
+
+model EvidenceAuditLog {
+  id         String   @id @default(uuid())
+  evidenceId String
+  action     String   // VIEWED, DOWNLOADED, VERIFIED, REJECTED
+  actorId    String
+  actorIp    String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  evidence   Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@index([evidenceId])
+}
+
+model OcrExtraction {
+  id                 String   @id @default(uuid())
+  evidenceId         String
+  extractedAmount    Decimal? @db.Decimal(14, 2)
+  extractedReference String?
+  extractedDate      DateTime?
+  extractedSender    String?
+  extractedRecipient String?
+  extractedBank      String?
+  extractedNarration String?
+  rawText            String?
+  confidenceScore    Decimal  @db.Decimal(5, 2) // e.g. 94.50
+  warnings           String[]
+  requiresManualVerification Boolean @default(true)
+  createdAt          DateTime @default(now())
+
+  evidence           Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@index([evidenceId])
+}
+
+// --------------------------------------------------------
+// 7. COMPLAINTS & ESCALATIONS
+// --------------------------------------------------------
+
+model Complaint {
+  id                 String                @id @default(uuid())
+  complaintRef       String                @unique // CP-202609-00123
+  caseId             String
+  providerId         String?
+  subject            String
+  contentBody        String
+  structuredSummary  Json                  // Chronology, Evidence Hashes, Demands, Legal Basis
+  isRegulatoryFormat Boolean               @default(false) // CBN / FCCPC standardized
+  generatedPdfUrl    String?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  rescueCase         RescueCase            @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  submissions        ComplaintSubmission[]
+
+  @@index([caseId])
+}
+
+model ComplaintSubmission {
+  id             String    @id @default(uuid())
+  complaintId    String
+  channel        String    // EMAIL, DIRECT_PORTAL, API, MANUAL_COPY
+  recipient      String?
+  submittedBy    String
+  status         String    // PENDING, DISPATCHED, DELIVERED, FAILED
+  responseRef    String?
+  providerReply  String?
+  deliveredAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  complaint      Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+
+  @@index([complaintId])
+}
+
+// --------------------------------------------------------
+// 8. PAYMENT RECONCILIATION & MERCHANT VERIFICATION
+// --------------------------------------------------------
+
+model ReconciliationJob {
+  id             String                 @id @default(uuid())
+  businessId     String
+  jobReference   String                 @unique // REC-202609-0001
+  totalRecords   Int                    @default(0)
+  matchedCount   Int                    @default(0)
+  partialCount   Int                    @default(0)
+  unmatchedCount Int                    @default(0)
+  mismatchCount  Int                    @default(0)
+  status         String                 @default("PROCESSING") // PROCESSING, COMPLETED, FAILED
+  sourceFileName String?
+  metadata       Json?
+  completedAt    DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  business       Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  results        ReconciliationResult[]
+
+  @@index([businessId])
+}
+
+model ReconciliationResult {
+  id                   String               @id @default(uuid())
+  jobId                String
+  claimedReference     String
+  actualReference      String?
+  claimedAmount        Decimal              @db.Decimal(14, 2)
+  actualAmount         Decimal?             @db.Decimal(14, 2)
+  status               ReconciliationStatus
+  confidenceScore      Decimal              @db.Decimal(5, 2) // 0 - 100
+  discrepancyReason    String?
+  reconciliationNotes  String?
+  matchedTransactionId String?
+  rawEntryData         Json?
+  createdAt            DateTime             @default(now())
+
+  job                  ReconciliationJob    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([claimedReference])
+}
+
+model PaymentRequest {
+  id                 String               @id @default(uuid())
+  businessId         String
+  requestReference   String               @unique // PR-REQ-0001
+  expectedAmount     Decimal              @db.Decimal(14, 2)
+  currency           String               @default("NGN")
+  payerIdentifier    String?              // Customer phone / email
+  description        String?
+  isFulfilled        Boolean              @default(false)
+  expiresAt          DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  business           Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  verifications      VerificationResult[]
+
+  @@index([businessId])
+  @@index([requestReference])
+}
+
+model VerificationResult {
+  id                 String       @id @default(uuid())
+  paymentRequestId   String?
+  transactionId      String?
+  claimedReference   String
+  verifiedAmount     Decimal?     @db.Decimal(14, 2)
+  isConfirmed        Boolean      @default(false)
+  confidenceLevel    String       // HIGH, MEDIUM, LOW, UNVERIFIED
+  reason             String
+  auditDetails       Json?
+  createdAt          DateTime     @default(now())
+
+  paymentRequest     PaymentRequest? @relation(fields: [paymentRequestId], references: [id])
+  transaction        Transaction?    @relation(fields: [transactionId], references: [id])
+
+  @@index([claimedReference])
+}
+
+// --------------------------------------------------------
+// 9. RISK & TRUST SIGNAL ENGINE
+// --------------------------------------------------------
+
+model RiskRule {
+  id          String     @id @default(uuid())
+  code        String     @unique // DUP_REF_24H, AMT_MISMATCH_GT_100, etc.
+  name        String
+  description String
+  severity    String     // LOW, MEDIUM, HIGH, CRITICAL
+  action      RiskAction @default(REVIEW)
+  isActive    Boolean    @default(true)
+  parameters  Json?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([code])
+}
+
+model RiskSignal {
+  id              String     @id @default(uuid())
+  caseId          String?
+  transactionRef  String
+  ruleCode        String
+  severity        String
+  recommendedAction RiskAction
+  confidenceScore Decimal    @db.Decimal(5, 2)
+  reasonDetails   String
+  evidenceSummary Json?
+  createdAt       DateTime   @default(now())
+
+  rescueCase      RescueCase? @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([transactionRef])
+  @@index([caseId])
+}
+
+// --------------------------------------------------------
+// 10. DEVELOPER PLATFORM (TRUSTPAY API)
+// --------------------------------------------------------
+
+model ApiKey {
+  id          String    @id @default(uuid())
+  businessId  String
+  name        String
+  keyPrefix   String    // e.g. pr_live_ or pr_test_
+  hashedKey   String    @unique // SHA-256 hash of secret
+  environment String    @default("test") // live or test
+  scopes      String[]  // transactions:read, cases:write, recon:read
+  rateLimit   Int       @default(100) // requests per minute
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([hashedKey])
+}
+
+model Webhook {
+  id          String            @id @default(uuid())
+  businessId  String
+  targetUrl   String
+  secretKey   String            // Shared HMAC secret
+  subscribedEvents String[]     // case.updated, recon.completed
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  business    Business          @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+
+  @@index([businessId])
+}
+
+model WebhookDelivery {
+  id             String    @id @default(uuid())
+  webhookId      String
+  eventType      String
+  payload        Json
+  responseStatus Int?
+  responseBody   String?
+  attemptCount   Int       @default(1)
+  deliveredAt    DateTime?
+  isSuccess      Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+
+  webhook        Webhook   @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+}
+
+model IdempotencyKey {
+  id             String   @id @default(uuid())
+  key            String   @unique
+  requestPath    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@index([key])
+}
+
+model ApiAuditLog {
+  id           String   @id @default(uuid())
+  apiKeyId     String?
+  method       String
+  path         String
+  ipAddress    String?
+  statusCode   Int
+  durationMs   Int
+  requestId    String
+  createdAt    DateTime @default(now())
+
+  @@index([requestId])
+  @@index([path])
+}
+
+// --------------------------------------------------------
+// 11. BILLING & MONETIZATION
+// --------------------------------------------------------
+
+model Plan {
+  id               String           @id @default(uuid())
+  code             String           @unique // FREE, STARTER, BUSINESS, PRO, ENTERPRISE
+  name             String
+  tier             SubscriptionTier
+  description      String
+  monthlyPriceNgn  Decimal          @db.Decimal(12, 2)
+  annualPriceNgn   Decimal          @db.Decimal(12, 2)
+  maxCasesPerMonth Int
+  hasApiAccess     Boolean          @default(false)
+  hasBulkRecon     Boolean          @default(false)
+  hasCustomSla     Boolean          @default(false)
+  features         String[]
+  isActive         Boolean          @default(true)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  subscriptions    Subscription[]
+
+  @@index([code])
+}
+
+model Subscription {
+  id                   String             @id @default(uuid())
+  businessId           String
+  planId               String
+  status               SubscriptionStatus @default(ACTIVE)
+  paystackSubCode      String?
+  paystackCustomerCode String?
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  business             Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  plan                 Plan               @relation(fields: [planId], references: [id])
+  invoices             Invoice[]
+
+  @@index([businessId])
+}
+
+model Invoice {
+  id             String        @id @default(uuid())
+  businessId     String
+  subscriptionId String?
+  invoiceNumber  String        @unique // INV-202609-001
+  amountDue      Decimal       @db.Decimal(12, 2)
+  amountPaid     Decimal       @default(0) @db.Decimal(12, 2)
+  currency       String        @default("NGN")
+  status         String        // PAID, OPEN, VOID, UNCOLLECTIBLE
+  dueDate        DateTime
+  paidAt         DateTime?
+  pdfUrl         String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  business       Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  payments       Payment[]
+
+  @@index([businessId])
+}
+
+model Payment {
+  id                  String   @id @default(uuid())
+  invoiceId           String
+  paymentReference    String   @unique
+  paystackReference   String?  @unique
+  amount              Decimal  @db.Decimal(12, 2)
+  currency            String   @default("NGN")
+  status              String   // SUCCESS, FAILED, PENDING
+  channel             String?  // card, bank_transfer, ussd
+  paidAt              DateTime?
+  gatewayResponse     Json?
+  createdAt           DateTime @default(now())
+
+  invoice             Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([paymentReference])
+}
+
+model UsageRecord {
+  id         String   @id @default(uuid())
+  businessId String
+  metric     String   // CASES_CREATED, RECON_ROWS, API_CALLS
+  quantity   Int      @default(1)
+  periodDate DateTime // First day of the current billing cycle
+  createdAt  DateTime @default(now())
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, metric, periodDate])
+  @@index([businessId])
+}
+
+// --------------------------------------------------------
+// 12. NOTIFICATIONS & ESCALATIONS
+// --------------------------------------------------------
+
+model NotificationTemplate {
+  id        String              @id @default(uuid())
+  code      String              @unique // CASE_CREATED, PROVIDER_REMINDER, ESCALATION_WARNING
+  title     String
+  channel   NotificationChannel
+  subject   String?
+  body      String              // Supports {{caseNumber}}, {{providerName}}, etc.
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  @@index([code])
+}
+
+model Notification {
+  id         String              @id @default(uuid())
+  userId     String
+  channel    NotificationChannel @default(IN_APP)
+  title      String
+  body       String
+  linkUrl    String?
+  isRead     Boolean             @default(false)
+  sentAt     DateTime?
+  metadata   Json?
+  createdAt  DateTime            @default(now())
+
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([isRead])
+}
+
+// --------------------------------------------------------
+// 13. SYSTEM AUDIT, SETTINGS & FLAGS
+// --------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String   // USER_LOGIN, STATUS_CHANGE, API_KEY_CREATED, etc.
+  entityType String   // User, RescueCase, Business, Provider
+  entityId   String
+  ipAddress  String?
+  userAgent  String?
+  changes    Json?    // { before: {...}, after: {...} }
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+}
+
+model SystemSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique // SYSTEM_MAINTENANCE_MODE, DEFAULT_SLA_HOURS, etc.
+  value       String
+  description String?
+  isPublic    Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+
+  @@index([key])
+}
+
+model FeatureFlag {
+  id          String   @id @default(uuid())
+  name        String   @unique // OCR_ENABLED, AUTO_ESCALATION, PUBLIC_RESCUE
+  isEnabled   Boolean  @default(true)
+  description String?
+  rolloutPct  Int      @default(100)
+  updatedAt   DateTime @updatedAt
+
+  @@index([name])
+}
